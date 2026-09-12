@@ -158,10 +158,13 @@ impl GrandSlam {
             "User-Agent",
             HeaderValue::from_str(&client_info.user_agent)?,
         );
-        headers.insert("X-Xcode-Version", HeaderValue::from_static("14.2 (14C18)"));
+        // تمت إزالته: كان بيقول لسيرفر أبل إن الطلب جاي من Xcode
+        // فبيترفض الطلب بـ 503 عند الـ edge قبل حتى فحص الحساب.
+        // headers.insert("X-Xcode-Version", HeaderValue::from_static("14.2 (14C18)"));
         headers.insert(
             "X-Apple-App-Info",
-            HeaderValue::from_static("com.apple.gs.xcode.auth"),
+            // كانت "com.apple.gs.xcode.auth" - فيها substring "xcode" بيفضح العميل
+            HeaderValue::from_static("com.apple.gs.akd.auth"),
         );
 
         Ok(headers)
