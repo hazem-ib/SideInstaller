@@ -1,9 +1,0 @@
-# sign-sideinstaller — the inputs that determine the install page.
-# Written by the last full run and compared before the next one; the run
-# is skipped when this file would come out identical. Delete to force.
-channel	stable
-ipa_url	https://github.com/FrizzleM/SideInstaller/releases/download/v0.9.0/SideInstaller.ipa
-ipa_size	7908297
-output_base_url	https://raw.githubusercontent.com/FrizzleM/SideInstaller/main/output
-inputs_sha256	4e454720a57348dcbb3518c5dc80b40ad08a23d53492f36afbcf2dd0f252f51e
-cert	HSBC-Bank-plc	D45C911EC45A3D7DFAA026FF45583E594CF0B8CD	2028-04-29	revoked
