@@ -1,6 +1,0 @@
-./build-rust.sh        # cross-compiles rust-core -> SideInstallerFFI.xcframework
-xcodegen generate      # regenerates SideInstaller.xcodeproj from project.yml
-# then open SideInstaller.xcodeproj, or:
-xcodebuild build -project SideInstaller.xcodeproj -scheme SideInstaller \
-  -sdk iphonesimulator -destination 'platform=iOS Simulator,name=iPhone 17' \
-  CODE_SIGNING_ALLOWED=NO
