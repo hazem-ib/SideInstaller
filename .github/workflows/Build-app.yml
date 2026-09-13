@@ -1,0 +1,330 @@
+name: Build SideInstaller Unsigned IPA
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build unsigned IPA
+    runs-on: macos-latest
+
+    env:
+      IPHONEOS_DEPLOYMENT_TARGET: "18.0"
+
+    steps:
+      # ------------------------------------------------------------
+      # Checkout
+      # ------------------------------------------------------------
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      # ------------------------------------------------------------
+      # Show Xcode / macOS information
+      # ------------------------------------------------------------
+      - name: Show build environment
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "macOS:"
+          sw_vers
+
+          echo
+          echo "Xcode:"
+          xcodebuild -version
+
+          echo
+          echo "Developer directory:"
+          xcode-select -p
+
+          # build-rust.sh defaults to /Applications/Xcode-beta.app.
+          # GitHub Actions should instead use the Xcode selected by the runner.
+          echo "DEVELOPER_DIR=$(xcode-select -p)" >> "$GITHUB_ENV"
+
+      # ------------------------------------------------------------
+      # Install XcodeGen
+      # ------------------------------------------------------------
+      - name: Install XcodeGen
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if command -v xcodegen >/dev/null 2>&1; then
+            echo "XcodeGen is already installed:"
+            xcodegen --version
+          else
+            brew install xcodegen
+            xcodegen --version
+          fi
+
+      # ------------------------------------------------------------
+      # Install/update Rust
+      # ------------------------------------------------------------
+      - name: Setup Rust
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+
+          rustup target add \
+            aarch64-apple-ios \
+            aarch64-apple-ios-sim
+
+          echo
+          rustc --version
+          cargo --version
+
+          echo
+          echo "Installed Rust targets:"
+          rustup target list --installed
+
+      # ------------------------------------------------------------
+      # Cache Rust dependencies/build output
+      # ------------------------------------------------------------
+      - name: Cache Rust
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            rust-core/target
+          key: sideinstaller-rust-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust-core/Cargo.lock', 'rust-core/Cargo.toml') }}
+          restore-keys: |
+            sideinstaller-rust-${{ runner.os }}-${{ runner.arch }}-
+
+      # ------------------------------------------------------------
+      # Build SideInstaller Rust FFI
+      #
+      # Produces:
+      #   SideInstallerFFI.xcframework
+      # ------------------------------------------------------------
+      - name: Build Rust FFI
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          chmod +x ./build-rust.sh
+
+          DEVELOPER_DIR="$(xcode-select -p)" \
+            ./build-rust.sh
+
+          echo
+          echo "Checking generated XCFramework..."
+
+          if [[ ! -d "SideInstallerFFI.xcframework" ]]; then
+            echo "::error::SideInstallerFFI.xcframework was not generated"
+            exit 1
+          fi
+
+          find SideInstallerFFI.xcframework -maxdepth 3 -type f -print
+
+      # ------------------------------------------------------------
+      # Generate Xcode project
+      # ------------------------------------------------------------
+      - name: Generate Xcode project
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          xcodegen generate
+
+          if [[ ! -d "SideInstaller.xcodeproj" ]]; then
+            echo "::error::SideInstaller.xcodeproj was not generated"
+            exit 1
+          fi
+
+          echo
+          echo "Generated project:"
+          ls -la SideInstaller.xcodeproj
+
+      # ------------------------------------------------------------
+      # Build iPhone app WITHOUT code signing
+      #
+      # Important:
+      #   CODE_SIGNING_ALLOWED=NO
+      #   CODE_SIGNING_REQUIRED=NO
+      #   CODE_SIGN_IDENTITY=""
+      #   DEVELOPMENT_TEAM=""
+      #
+      # This creates an unsigned SideInstaller.app.
+      # ------------------------------------------------------------
+      - name: Build unsigned SideInstaller app
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          rm -rf build
+
+          xcodebuild \
+            -project SideInstaller.xcodeproj \
+            -target SideInstaller \
+            -configuration Release \
+            -sdk iphoneos \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            DEVELOPMENT_TEAM="" \
+            CONFIGURATION_BUILD_DIR="$PWD/build/Release-iphoneos" \
+            build
+
+      # ------------------------------------------------------------
+      # Locate and verify SideInstaller.app
+      # ------------------------------------------------------------
+      - name: Verify app bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          APP_PATH="$PWD/build/Release-iphoneos/SideInstaller.app"
+
+          if [[ ! -d "$APP_PATH" ]]; then
+            echo "::error::SideInstaller.app was not found"
+            echo
+            echo "Build directory contents:"
+            find build -maxdepth 5 -print || true
+            exit 1
+          fi
+
+          echo "App found:"
+          du -sh "$APP_PATH"
+
+          echo
+          echo "Executable:"
+          file "$APP_PATH/SideInstaller"
+
+          # Just in case Xcode generated any signing leftovers,
+          # remove them before creating the unsigned IPA.
+          rm -rf "$APP_PATH/_CodeSignature"
+          rm -f "$APP_PATH/embedded.mobileprovision"
+
+          echo
+          echo "Checking for signing leftovers..."
+
+          if [[ -d "$APP_PATH/_CodeSignature" ]]; then
+            echo "::error::_CodeSignature still exists"
+            exit 1
+          fi
+
+          if [[ -f "$APP_PATH/embedded.mobileprovision" ]]; then
+            echo "::error::embedded.mobileprovision still exists"
+            exit 1
+          fi
+
+          # codesign must fail for an unsigned app.
+          if codesign --verify "$APP_PATH" >/dev/null 2>&1; then
+            echo "::error::SideInstaller.app unexpectedly has a valid signature"
+            exit 1
+          fi
+
+          echo "Confirmed: SideInstaller.app is unsigned."
+
+      # ------------------------------------------------------------
+      # Package Payload/SideInstaller.app as IPA
+      # ------------------------------------------------------------
+      - name: Create unsigned IPA
+        id: package
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          APP_PATH="$PWD/build/Release-iphoneos/SideInstaller.app"
+
+          SHORT_SHA="${GITHUB_SHA::7}"
+          IPA_NAME="SideInstaller-unsigned-${SHORT_SHA}.ipa"
+
+          PACKAGE_DIR="$PWD/build/ipa"
+          ARTIFACT_DIR="$PWD/artifacts"
+
+          rm -rf "$PACKAGE_DIR" "$ARTIFACT_DIR"
+
+          mkdir -p \
+            "$PACKAGE_DIR/Payload" \
+            "$ARTIFACT_DIR"
+
+          cp -R \
+            "$APP_PATH" \
+            "$PACKAGE_DIR/Payload/SideInstaller.app"
+
+          cd "$PACKAGE_DIR"
+
+          ditto \
+            -c \
+            -k \
+            --sequesterRsrc \
+            --keepParent \
+            Payload \
+            "$ARTIFACT_DIR/$IPA_NAME"
+
+          cd "$GITHUB_WORKSPACE"
+
+          if [[ ! -f "$ARTIFACT_DIR/$IPA_NAME" ]]; then
+            echo "::error::IPA was not created"
+            exit 1
+          fi
+
+          echo "ipa_name=$IPA_NAME" >> "$GITHUB_OUTPUT"
+          echo "ipa_path=$ARTIFACT_DIR/$IPA_NAME" >> "$GITHUB_OUTPUT"
+
+          echo
+          echo "Created IPA:"
+          ls -lh "$ARTIFACT_DIR/$IPA_NAME"
+
+      # ------------------------------------------------------------
+      # Verify IPA structure
+      # ------------------------------------------------------------
+      - name: Verify IPA
+        shell: bash
+        env:
+          IPA_PATH: ${{ steps.package.outputs.ipa_path }}
+        run: |
+          set -euo pipefail
+
+          echo "IPA contents:"
+          unzip -l "$IPA_PATH" | head -100
+
+          echo
+          echo "Checking required app bundle..."
+
+          if ! unzip -l "$IPA_PATH" \
+            | grep -q 'Payload/SideInstaller.app/'; then
+            echo "::error::Payload/SideInstaller.app is missing from IPA"
+            exit 1
+          fi
+
+          echo "IPA structure is valid."
+
+      # ------------------------------------------------------------
+      # Upload IPA to GitHub Actions Artifact
+      # ------------------------------------------------------------
+      - name: Upload unsigned IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: SideInstaller-unsigned-${{ github.run_number }}
+          path: ${{ steps.package.outputs.ipa_path }}
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+
+      # ------------------------------------------------------------
+      # GitHub Actions summary
+      # ------------------------------------------------------------
+      - name: Build summary
+        shell: bash
+        env:
+          IPA_NAME: ${{ steps.package.outputs.ipa_name }}
+        run: |
+          {
+            echo "## SideInstaller unsigned IPA"
+            echo
+            echo "- **File:** \`$IPA_NAME\`"
+            echo "- **Commit:** \`${GITHUB_SHA}\`"
+            echo "- **Configuration:** Release"
+            echo "- **SDK:** iphoneos"
+            echo "- **Code signing:** Disabled"
+            echo "- **Artifact:** \`SideInstaller-unsigned-${GITHUB_RUN_NUMBER}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
