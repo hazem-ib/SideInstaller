@@ -25,6 +25,16 @@ use futures_util::{SinkExt, StreamExt};
 
 pub const DEFAULT_ANISETTE_V3_URL: &str = "https://ani.stikstore.app";
 
+/// Rewrites the Xcode client token inside an X-Mme-Client-Info string to the
+/// akd daemon token that actually performs GrandSlam auth on macOS. Apple's
+/// auth edge began rejecting any client_info advertising
+/// "com.apple.dt.Xcode" with an HTTP 503 in September 2026; anisette servers
+/// generally still emit the Xcode token, so it's patched here after fetch
+/// rather than relying on each server to update.
+fn sanitize_client_info(client_info: &str) -> String {
+    client_info.replace("com.apple.dt.Xcode", "com.apple.akd")
+}
+
 pub struct RemoteV3AnisetteProvider {
     pub state: Option<AnisetteState>,
     url: String,
@@ -143,7 +153,7 @@ impl AnisetteProvider for RemoteV3AnisetteProvider {
         match self.client_info {
             Some(ref info) => Ok(info.clone()),
             None => {
-                let resp = self
+                let mut resp = self
                     .client
                     .get(format!("{}/v3/client_info", self.url))
                     .send()
@@ -151,6 +161,14 @@ impl AnisetteProvider for RemoteV3AnisetteProvider {
                     .error_for_status()?
                     .json::<AnisetteClientInfo>()
                     .await?;
+
+                // Apple's auth edge now rejects any request whose client
+                // identifier advertises Xcode (returns a 503 before the
+                // credential is even checked). Most public anisette servers
+                // still hand back a client_info string built around
+                // "com.apple.dt.Xcode", so it's rewritten here to the akd
+                // daemon identifier that Apple still accepts.
+                resp.client_info = sanitize_client_info(&resp.client_info);
 
                 self.client_info = Some(resp.clone());
                 Ok(resp)
