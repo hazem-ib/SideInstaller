@@ -741,7 +741,20 @@ final class Engine: ObservableObject {
                     throw EngineError.message(Self.credentialErrorMessage)
                 }
                 log("Anisette \(name) failed: \(lastError)")
-                if idx < servers.count - 1 { log("Trying the next anisette server…") }
+                if idx < servers.count - 1 {
+                    // Each attempt hits gsa.apple.com twice (SRP init +
+                    // complete). Firing straight into the next server with no
+                    // gap sends up to servers.count * 2 requests within a few
+                    // seconds from the same IP, which Apple can — and, as of
+                    // this error, does — answer with 429 Too Many Requests.
+                    // A short pause spaces those out; on a 429 specifically,
+                    // pause longer since that's Apple's own rate limit signal.
+                    let isRateLimited = lastError.lowercased().contains("429")
+                        || lastError.lowercased().contains("too many requests")
+                    let delaySeconds: UInt64 = isRateLimited ? 5 : 1
+                    log("Trying the next anisette server in \(delaySeconds)s…")
+                    try? await Task.sleep(nanoseconds: delaySeconds * 1_000_000_000)
+                }
             }
         }
 
