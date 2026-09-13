@@ -158,10 +158,9 @@ impl GrandSlam {
             "User-Agent",
             HeaderValue::from_str(&client_info.user_agent)?,
         );
-        headers.insert("X-Xcode-Version", HeaderValue::from_static("14.2 (14C18)"));
         headers.insert(
             "X-Apple-App-Info",
-            HeaderValue::from_static("com.apple.gs.xcode.auth"),
+            HeaderValue::from_static("com.apple.gs.akd.auth"),
         );
 
         Ok(headers)
